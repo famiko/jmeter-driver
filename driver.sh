@@ -1,4 +1,4 @@
-#!/bin/sh --
+#!/bin/bash
 #
 # Driver for distributed JMeter testing.
 #
@@ -8,15 +8,12 @@
 #  ii.  Create a Docker container for the JMeter client (master).
 #       The client will connect to the servers created in step 
 #       (i) and trigger the test script that is provided.
-#        Tips -- Look for the following in the client logs
 # 
-# TODO: Cleanup - Not a biggie.  Just watiting on shutdown to be done.
 
 #
 # The environment
-SERVER_IMAGE=ssankara/jmeter-server
-CLIENT_IMAGE=ssankara/jmeter
-DATADIR=
+SERVER_IMAGE=famiko/jmeter-slave
+CLIENT_IMAGE=famiko/jmeter-master
 JMX_SCRIPT=
 WORK_DIR=$(readlink -f /tmp)
 NUM_SERVERS=1
@@ -34,25 +31,19 @@ function validate_env() {
 		usage
 		exit 1
 	fi
-	if [[ ! -d ${DATADIR} ]] ; then
-	  echo "The data directory '${DATADIR}' does not exist"
-		usage
-		exit 2
-	fi
 	if [[ ! -f ${JMX_SCRIPT} ]] ; then
 	  echo "The script file '${JMX_SCRIPT}' does not exist"
 		usage
-		exit 3
+		exit 2
 	fi
 	if [[ ${NUM_SERVERS} -lt 1 ]]; then
 		echo "Must start at least 1 JMX server."
 		usage
-		exit 4
+		exit 3
 	fi
 }
 
 function display_env() {
-	echo "    DATADIR=${DATADIR}"
 	echo " JMX_SCRIPT=${JMX_SCRIPT}"
 	echo "   WORK_DIR=${WORK_DIR}"
 	echo "NUM_SERVERS=${NUM_SERVERS}"
@@ -70,9 +61,7 @@ function start_servers() {
 		docker run --cidfile ${LOGDIR}/cid \
 					-d \
 					-p 0.0.0.0:${HOST_READ_PORT}:1099 \
-					-p 0.0.0.0:${HOST_WRITE_PORT}:60000 \
-					-v ${LOGDIR}:/logs \
-					-v ${DATADIR}:/input_data \
+					-p 0.0.0.0:${HOST_WRITE_PORT}:50000 \
 					--name jmeter-server-${n} \
 					${SERVER_IMAGE} 2>/dev/null 1>&2
 		err=$?
@@ -170,8 +159,7 @@ function remove_containers() {
 #
 # Le usage
 function usage() {
-  echo "Usage: $0 [-d data-dir] [-n num-jmeter-servers] [-s jmx] [-w work-dir]"
-	echo "-d      The data directory for data files used by the JMX script."
+  echo "Usage: $0 [-n num-jmeter-servers] [-s jmx] [-w work-dir]"
 	echo "-h      This help message"
 	echo "-n      The required number of servers"
 	echo "-s      The JMX script file"
@@ -181,12 +169,11 @@ function usage() {
 # ------------- Show starts here -------------
 
 #
-# Getopts to read - datadir, WORK_DIR, count of servers, script dir
-# script -d data-dir -s script-dir -w work-dir -n num-servers
+# Getopts to read - WORK_DIR, count of servers, script dir
+# script -s script-dir -w work-dir -n num-servers
 while getopts :d:hn:s:w: opt
 do
 	case ${opt} in
-		d) DATADIR=$(readlink -f ${OPTARG}) ;;
 		h) usage && exit 0 ;;
 		n) NUM_SERVERS=${OPTARG} ;;
 		s) JMX_SCRIPT=$(readlink -f ${OPTARG}) ;;
@@ -238,18 +225,22 @@ mkdir -p ${LOGDIR}
 docker run --cidfile ${LOGDIR}/cid \
 				-d \
 				-v ${LOGDIR}:/logs \
-				-v ${DATADIR}:/input_data \
 				-v $(dirname ${JMX_SCRIPT}):/scripts \
-				--name jmeter-client \
-				${CLIENT_IMAGE} -n -t /scripts/$(basename ${JMX_SCRIPT}) -l /logs/${JTL_FILE} -LDEBUG -R${SERVER_IPS} 2>/dev/null 1>&2
+				--name jmeter-client ${CLIENT_IMAGE} \
+                                -n -t /scripts/$(basename ${JMX_SCRIPT}) \
+				-j /logs/jmeter.log \
+				-l /logs/${JTL_FILE} \
+				-e -o /logs/output \
+				-R${SERVER_IPS} 2>/dev/null 1>&2
 
 err=$?
 if [[ ${err} -ne 0 ]] ; then
-	echo "Error '${err}' while starting the Jmeter client. Shutting down servers & quitting."
-	exit ${err}
-else
-	wait_for_client
-fi
+                      echo "Error '${err}' while starting a jmeter server. Quitting"
+                        exit ${err}
+                fi
+
+
+wait_for_client
 
 # Shutdown the servers
 stop_servers
@@ -257,6 +248,4 @@ stop_servers
 # Clean up
 remove_containers
 
-if [[ ${err} -ne 0 ]] ; then
-	echo "Please see ${LOGDIR}/${JTL_FILE} for the results of the run"
-fi
+echo "Please see ${LOGDIR}/${JTL_FILE} for the results of the run"
